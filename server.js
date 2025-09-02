@@ -1,13 +1,15 @@
-// server.js (CommonJS, hardened diagnostics)
-const express = require("express");
-const cors = require("cors");
-const dotenv = require("dotenv");
+// server.js (ESM, hardened diagnostics)
+import express from "express";
+import cors from "cors";
+import dotenv from "dotenv";
+import appleLib from "app-store-server-library";
+
 const {
   AppStoreServerAPIClient,
   Environment: AppleEnv,
   decodeRenewalInfo,
-  decodeTransaction,
-} = require("app-store-server-library");
+  decodeTransaction
+} = appleLib;
 
 dotenv.config();
 
@@ -22,7 +24,6 @@ const ENV = {
   APPLE_ISSUER_ID: process.env.APPLE_ISSUER_ID || "",
   APPLE_KEY_ID: process.env.APPLE_KEY_ID || "",
   APPLE_BUNDLE_ID: process.env.APPLE_BUNDLE_ID || "",
-  // We support either raw PEM or base64 version of the .p8
   APPLE_PRIVATE_KEY: process.env.APPLE_PRIVATE_KEY || "",
   APPLE_PRIVATE_KEY_B64: process.env.APPLE_PRIVATE_KEY_B64 || ""
 };
@@ -34,7 +35,7 @@ function loadPem() {
       return pem;
     }
     return ENV.APPLE_PRIVATE_KEY || "";
-  } catch (e) {
+  } catch {
     return "";
   }
 }
@@ -58,11 +59,11 @@ function appleClient() {
   return new AppStoreServerAPIClient(pem, ENV.APPLE_ISSUER_ID, ENV.APPLE_KEY_ID, ENV.APPLE_BUNDLE_ID, env);
 }
 
-// --- Helper: verifyReceipt bootstrap for original_transaction_id ---
+// --- verifyReceipt bootstrap: get original_transaction_id ---
 async function getOriginalTransactionIdFromReceipt(receiptB64) {
   try {
     if (!receiptB64 || typeof receiptB64 !== "string" || receiptB64.length < 20) {
-      return { originalTxId: null, debug: { status: 21002, note: "receipt missing or too short" } }; // 21002 ~ malformed
+      return { originalTxId: null, debug: { status: 21002, note: "receipt missing or too short" } };
     }
 
     const body = { "receipt-data": receiptB64, "exclude-old-transactions": false };
@@ -77,7 +78,6 @@ async function getOriginalTransactionIdFromReceipt(receiptB64) {
         body: JSON.stringify(body)
       });
       const t = await r.text();
-      // Some hosts return HTML on errors; guard parse:
       let json;
       try { json = JSON.parse(t); } catch { json = { status: "NON_JSON", raw: t.slice(0, 200) }; }
       return json;
@@ -169,14 +169,18 @@ app.post("/verify_apple_receipt", async (req, res) => {
       const client = appleClient();
       statuses = await client.getAllSubscriptionStatuses(info.originalTxId);
     } catch (e) {
-      // Most common: 401 due to key problems — surface enough to diagnose
       const httpStatusCode = e?.httpStatusCode || 0;
       const apiError = e?.apiError || null;
       return res.status(500).json({
         active: false,
         reason: "APPLE_SERVER_API_ERROR",
         error: String(e?.message || e),
-        debug: { httpStatusCode, apiError, env: ENV.NODE_ENV, keyId: ENV.APPLE_KEY_ID, issuerId: ENV.APPLE_ISSUER_ID.slice(0,8) + "..." }
+        debug: {
+          httpStatusCode, apiError,
+          env: ENV.NODE_ENV,
+          keyId: ENV.APPLE_KEY_ID,
+          issuerId: ENV.APPLE_ISSUER_ID ? ENV.APPLE_ISSUER_ID.slice(0,8) + "..." : ""
+        }
       });
     }
 
