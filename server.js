@@ -66,7 +66,7 @@ async function getOriginalTransactionIdFromReceipt(receiptB64) {
       return { originalTxId: null, debug: { status: 21002, note: "receipt missing or too short" } };
     }
 
-    const body = { "receipt-data": receiptB64, "exclude-old-transactions": false };
+    const body = { "receipt-data": receiptB64, "exclude-old-transactions": false, ...(process.env.APPLE_SHARED_SECRET ? { password: process.env.APPLE_SHARED_SECRET } : {}) };
     const urlProd = "https://buy.itunes.apple.com/verifyReceipt";
     const urlSandbox = "https://sandbox.itunes.apple.com/verifyReceipt";
     const startUrl = ENV.NODE_ENV === "production" ? urlProd : urlSandbox;
