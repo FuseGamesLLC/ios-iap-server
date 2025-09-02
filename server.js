@@ -151,9 +151,9 @@ app.post("/verify_apple_receipt", async (req, res) => {
       productId: decision.productId || product_id || null,
       expiresAt: decision.expiresAt || null,
     });
-  } catch (err) {
-    console.error(err);
-    return res.status(500).json({ active: false, reason: "SERVER_ERROR" });
+  } catch (e) {
+    console.error("VERIFY_ERROR:", e);
+    return res.status(500).json({ active: false, reason: "SERVER_ERROR", error: String(e?.message || e) });
   }
 });
 
