@@ -81,8 +81,8 @@ async function getOriginalTransactionIdFromReceipt(receiptB64) {
     return latest?.original_transaction_id || null;
   }
 
-  // no usable info
-  return null;
+  // no usable info// Replace the final return null;
+  return { originalTxId: null, debug: { status: json.status, hasLatest: Array.isArray(json.latest_receipt_info), env: process.env.NODE_ENV } };
 }
 
 // ---------- Helper 2: Decide active/lapsed from Server API response ----------
