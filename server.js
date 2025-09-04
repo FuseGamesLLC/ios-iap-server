@@ -277,18 +277,18 @@ app.post("/verify_apple_receipt", async (req, res) => {
     }
 
     // Step 2: App Store Server API (with timeout)
-    let statuses;
-    try {
-      const client = appleClient();
-      const timer = withTimeout(null, ENV.SERVER_API_TIMEOUT_MS, "getAllSubscriptionStatuses");
-      statuses = await timer.run(async (signal) => {
-        // Library accepts signal via options in recent versions. If yours doesn’t,
-        // this will still be bounded by Promise.race timeout above.
-        return client.getAllSubscriptionStatuses(info.originalTxId, { signal });
-      });
-    } catch (e) {
-      const httpStatusCode = e?.httpStatusCode || 0;
-      const apiError = e?.apiError || null;
+let statuses;
+try {
+  const client = appleClient();
+  statuses = await Promise.race([
+    client.getAllSubscriptionStatuses(info.originalTxId),
+    new Promise((_, rej) =>
+      setTimeout(() => rej(new Error("getAllSubscriptionStatuses timeout")), ENV.SERVER_API_TIMEOUT_MS)
+    )
+  ]);
+} catch (e) {
+  const httpStatusCode = e?.httpStatusCode || 0;
+  const apiError = e?.apiError || null;
 
       console.error("APPLE_SERVER_API_ERROR", {
         httpStatusCode,
