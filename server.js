@@ -159,10 +159,17 @@ app.post("/verify_apple_receipt", async (req, res) => {
     }
 
     // Step 1: get original tx id (or explain why not)
-    const info = await getOriginalTransactionIdFromReceipt(receipt_b64);
-    if (!info?.originalTxId) {
-      return res.json({ active: false, reason: "NO_ORIGINAL_TRANSACTION_ID", debug: info?.debug || null });
+const info = await getOriginalTransactionIdFromReceipt(receipt_b64);
+if (!info?.originalTxId) {
+  return res.json({
+    active: false,
+    reason: "NO_ORIGINAL_TRANSACTION_ID",
+    debug: {
+      ...info?.debug,
+      receiptLen: (req.body?.receipt_b64 || "").length // 👈 shows how long the receipt was
     }
+  });
+}
 
     // Step 2: call Apple Server API (authoritative) — only if we have a tx id
     let statuses;
