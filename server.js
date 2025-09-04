@@ -4,7 +4,7 @@ import express from "express";
 import cors from "cors";
 import dotenv from "dotenv";
 import appleLib from "app-store-server-library";
-import morgan from "morgan";
+// import morgan from "morgan";
 
 const {
   AppStoreServerAPIClient,
@@ -18,7 +18,7 @@ dotenv.config();
 const app = express();
 app.use(cors());
 app.use(express.json({ limit: "1mb" }));
-app.use(morgan("tiny"));
+// app.use(morgan("tiny"));
 
 // ------------------------ Config ------------------------
 const ENV = {
