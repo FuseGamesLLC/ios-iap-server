@@ -290,25 +290,24 @@ try {
   const httpStatusCode = e?.httpStatusCode || 0;
   const apiError = e?.apiError || null;
 
-      console.error("APPLE_SERVER_API_ERROR", {
-        httpStatusCode,
-        apiError,
-        env: ENV.NODE_ENV,
-        bundleId: ENV.APPLE_BUNDLE_ID,
-        keyId: ENV.APPLE_KEY_ID,
-        issuerId: ENV.APPLE_ISSUER_ID ? ENV.APPLE_ISSUER_ID.slice(0, 8) + "..." : "",
-        msg: String(e?.message || e)
-      });
+  console.error("APPLE_SERVER_API_ERROR", {
+    httpStatusCode,
+    apiError,
+    env: ENV.NODE_ENV,
+    bundleId: ENV.APPLE_BUNDLE_ID,
+    keyId: ENV.APPLE_KEY_ID,
+    issuerId: ENV.APPLE_ISSUER_ID ? ENV.APPLE_ISSUER_ID.slice(0, 8) + "..." : "",
+    msg: String(e?.message || e)
+  });
 
-      // 401 from Apple vs timeout/network → 504
-      const code = String(e?.message || "").includes("timeout") ? 504 : (httpStatusCode || 500);
-      return res.status(code).json({
-        active: false,
-        reason: "APPLE_SERVER_API_ERROR",
-        error: String(e?.message || e),
-        debug: { httpStatusCode, apiError, env: ENV.NODE_ENV }
-      });
-    }
+  const code = String(e?.message || "").includes("timeout") ? 504 : (httpStatusCode || 500);
+  return res.status(code).json({
+    active: false,
+    reason: "APPLE_SERVER_API_ERROR",
+    error: String(e?.message || e),
+    debug: { httpStatusCode, apiError, env: ENV.NODE_ENV }
+  });
+}
 
     // Step 3: Decide active
     const d = decideActiveFromStatuses(statuses, product_id);
