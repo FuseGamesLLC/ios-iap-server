@@ -150,6 +150,32 @@ app.get("/diag", (_req, res) => {
   });
 });
 
+app.get("/diag-apple-auth", (_req, res) => {
+  const chk = configCheck();
+  const pem = loadPem();
+  res.json({
+    ok: chk.ok,
+    issues: chk.issues,
+    issuerIdLen: (process.env.APPLE_ISSUER_ID || "").length,
+    keyIdLen: (process.env.APPLE_KEY_ID || "").length,
+    bundleId: ENV.APPLE_BUNDLE_ID,
+    pemLen: pem.length,
+    startsWith: pem.slice(0, 30),
+    endsWith: pem.slice(-30),
+    nodeEnv: ENV.NODE_ENV
+  });
+});
+
+console.error("APPLE 401", {
+  httpStatusCode,
+  apiError,
+  env: ENV.NODE_ENV,
+  bundleId: ENV.APPLE_BUNDLE_ID,
+  keyId: ENV.APPLE_KEY_ID,
+  issuerId: ENV.APPLE_ISSUER_ID?.slice(0,8) + "..."
+});
+
+
 // ---- Main endpoint ----
 app.post("/verify_apple_receipt", async (req, res) => {
   try {
