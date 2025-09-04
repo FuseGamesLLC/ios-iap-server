@@ -1,162 +1,203 @@
-// server.js
+// server.js (ESM, hardened diagnostics)
 import express from "express";
 import cors from "cors";
 import dotenv from "dotenv";
-import fetch from "node-fetch";
 import appleLib from "app-store-server-library";
+
 const {
   AppStoreServerAPIClient,
   Environment: AppleEnv,
   decodeRenewalInfo,
-  decodeTransaction,
+  decodeTransaction
 } = appleLib;
+
 dotenv.config();
 
 const app = express();
-app.use(cors()); // not required for native apps, harmless otherwise
-app.use(express.json({ limit: "1mb" })); // our JSON body is small
+app.use(cors());
+app.use(express.json({ limit: "1mb" }));
 
-// ---- env ----
-const {
-  APPLE_ISSUER_ID,
-  APPLE_KEY_ID,
-  APPLE_PRIVATE_KEY,
-  APPLE_BUNDLE_ID,
-  NODE_ENV,
-  PORT = 8080,
-} = process.env;
+// ---- Load envs (no secrets logged) ----
+const ENV = {
+  NODE_ENV: process.env.NODE_ENV || "sandbox",
+  PORT: process.env.PORT || 8080,
+  APPLE_ISSUER_ID: process.env.APPLE_ISSUER_ID || "",
+  APPLE_KEY_ID: process.env.APPLE_KEY_ID || "",
+  APPLE_BUNDLE_ID: process.env.APPLE_BUNDLE_ID || "",
+  APPLE_PRIVATE_KEY: process.env.APPLE_PRIVATE_KEY || "",
+  APPLE_PRIVATE_KEY_B64: process.env.APPLE_PRIVATE_KEY_B64 || ""
+};
 
-if (!APPLE_ISSUER_ID || !APPLE_KEY_ID || !APPLE_PRIVATE_KEY || !APPLE_BUNDLE_ID) {
-  console.error("Missing Apple env vars. Check .env (ISSUER_ID, KEY_ID, PRIVATE_KEY, BUNDLE_ID).");
-  process.exit(1);
+function loadPem() {
+  try {
+    if (ENV.APPLE_PRIVATE_KEY_B64) {
+      const pem = Buffer.from(ENV.APPLE_PRIVATE_KEY_B64, "base64").toString("utf8");
+      return pem;
+    }
+    return ENV.APPLE_PRIVATE_KEY || "";
+  } catch {
+    return "";
+  }
 }
 
-// If your APPLE_PRIVATE_KEY is base64 instead of PEM, uncomment to decode:
-// const PRIVATE_KEY_PEM = APPLE_PRIVATE_KEY.includes("BEGIN PRIVATE KEY")
-//   ? APPLE_PRIVATE_KEY
-//   : Buffer.from(APPLE_PRIVATE_KEY, "base64").toString("utf8");
+function configCheck() {
+  const pem = loadPem();
+  const issues = [];
+  if (!ENV.APPLE_ISSUER_ID) issues.push("APPLE_ISSUER_ID missing");
+  if (!ENV.APPLE_KEY_ID) issues.push("APPLE_KEY_ID missing");
+  if (!ENV.APPLE_BUNDLE_ID) issues.push("APPLE_BUNDLE_ID missing");
+  if (!pem) issues.push("APPLE_PRIVATE_KEY / APPLE_PRIVATE_KEY_B64 missing/bad");
+  if (pem && !pem.startsWith("-----BEGIN PRIVATE KEY-----")) {
+    issues.push("Private key does not start with BEGIN PRIVATE KEY (PEM formatting issue?)");
+  }
+  return { ok: issues.length === 0, issues, pemStart: pem ? pem.split("\n")[0] : "NONE", pemLen: pem.length };
+}
 
-const PRIVATE_KEY_PEM = APPLE_PRIVATE_KEY;
-
-// Apple client for App Store Server API
 function appleClient() {
-  const env = NODE_ENV === "production" ? AppleEnv.Production : AppleEnv.Sandbox;
-  return new AppStoreServerAPIClient(PRIVATE_KEY_PEM, APPLE_ISSUER_ID, APPLE_KEY_ID, APPLE_BUNDLE_ID, env);
+  const pem = loadPem();
+  const env = ENV.NODE_ENV === "production" ? AppleEnv.Production : AppleEnv.Sandbox;
+  return new AppStoreServerAPIClient(pem, ENV.APPLE_ISSUER_ID, ENV.APPLE_KEY_ID, ENV.APPLE_BUNDLE_ID, env);
 }
 
-// ---------- Helper 1: Only once per user: get original_transaction_id from base64 app receipt ----------
-// verifyReceipt is deprecated, but Apple still documents it; we use it here as a bootstrap.
-// If you see status 21007 (sandbox receipt to production URL) or 21008, we retry in the other env.
+// --- verifyReceipt bootstrap: get original_transaction_id ---
 async function getOriginalTransactionIdFromReceipt(receiptB64) {
-  const body = { "receipt-data": receiptB64, "exclude-old-transactions": false };
+  try {
+    if (!receiptB64 || typeof receiptB64 !== "string" || receiptB64.length < 20) {
+      return { originalTxId: null, debug: { status: 21002, note: "receipt missing or too short" } };
+    }
 
-  // choose endpoint based on NODE_ENV
-  let url = NODE_ENV === "production"
-    ? "https://buy.itunes.apple.com/verifyReceipt"
-    : "https://sandbox.itunes.apple.com/verifyReceipt";
+    const body = { "receipt-data": receiptB64, "exclude-old-transactions": false };
+    const urlProd = "https://buy.itunes.apple.com/verifyReceipt";
+    const urlSandbox = "https://sandbox.itunes.apple.com/verifyReceipt";
+    const startUrl = ENV.NODE_ENV === "production" ? urlProd : urlSandbox;
 
-  const post = async (u) => {
-    const r = await fetch(u, {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify(body),
-    });
-    return r.json();
-  };
+    async function post(u) {
+      const r = await fetch(u, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(body)
+      });
+      const t = await r.text();
+      let json;
+      try { json = JSON.parse(t); } catch { json = { status: "NON_JSON", raw: t.slice(0, 200) }; }
+      return json;
+    }
 
-  let json = await post(url);
+    let json = await post(startUrl);
+    if (json.status === 21007) json = await post(urlSandbox);
+    if (json.status === 21008) json = await post(urlProd);
 
-  // Handle environment mismatch redirects
-  if (json.status === 21007) { // sandbox receipt sent to production
-    json = await post("https://sandbox.itunes.apple.com/verifyReceipt");
-  } else if (json.status === 21008) { // production receipt sent to sandbox
-    json = await post("https://buy.itunes.apple.com/verifyReceipt");
+    if (json.status === 0 && Array.isArray(json.latest_receipt_info)) {
+      const latest = json.latest_receipt_info.reduce((a, b) =>
+        Number(a.expires_date_ms || 0) > Number(b.expires_date_ms || 0) ? a : b
+      );
+      const originalTxId = latest?.original_transaction_id || null;
+      return { originalTxId, debug: { status: json.status, envTried: ENV.NODE_ENV } };
+    }
+
+    return { originalTxId: null, debug: { status: json.status, envTried: ENV.NODE_ENV, hasLatest: Array.isArray(json.latest_receipt_info) } };
+  } catch (e) {
+    return { originalTxId: null, debug: { error: String(e?.message || e) } };
   }
-
-  // Success (status 0). For auto-renewable subs, latest_receipt_info is an array.
-  if (json.status === 0 && Array.isArray(json.latest_receipt_info)) {
-    const latest = json.latest_receipt_info.reduce((a, b) =>
-      Number(a.expires_date_ms || 0) > Number(b.expires_date_ms || 0) ? a : b
-    );
-    return latest?.original_transaction_id || null;
-  }
-
-  // no usable info// Replace the final return null;
-  return { originalTxId: null, debug: { status: json.status, hasLatest: Array.isArray(json.latest_receipt_info), env: process.env.NODE_ENV } };
 }
 
-// ---------- Helper 2: Decide active/lapsed from Server API response ----------
+// --- Decide active/lapsed from Server API ---
 function decideActiveFromStatuses(statusResponse, targetProductId) {
   let newest = null;
+  const seen = new Set();
 
   for (const group of statusResponse?.data ?? []) {
     for (const item of group.lastTransactions ?? []) {
-      // Each item has signedTransactionInfo (JWS) and signedRenewalInfo (JWS)
       const tx = decodeTransaction(item.signedTransactionInfo);
       const rn = decodeRenewalInfo(item.signedRenewalInfo);
 
+      if (tx?.productId) seen.add(tx.productId);
       if (targetProductId && tx?.productId !== targetProductId) continue;
 
       const now = Date.now();
       const expiresMs = Number(tx?.expiresDate || 0);
       const cancelled = Boolean(tx?.revocationDate) || Boolean(tx?.cancellationDate);
-
-      // Grace/billing retry: treat as active until gracePeriodExpiresDate
       const graceMs = rn?.gracePeriodExpiresDate ? Number(rn.gracePeriodExpiresDate) : 0;
-      const inGrace = graceMs > now;
+      const active = !cancelled && ((expiresMs > now) || (graceMs > now));
 
-      const active = !cancelled && ((expiresMs > now) || inGrace);
-
-      const candidate = {
-        productId: tx?.productId || null,
-        expiresAt: expiresMs || 0,
-        active,
-      };
-
+      const candidate = { productId: tx?.productId || null, expiresAt: expiresMs || 0, active };
       if (!newest || candidate.expiresAt > newest.expiresAt) newest = candidate;
     }
   }
 
-  // If no transactions found, default to not active
-  return newest || { active: false, reason: "NO_TRANSACTIONS" };
+  if (!newest) return { active: false, reason: "NO_TRANSACTIONS", debug: { seenProducts: [...seen] } };
+  newest.debug = { seenProducts: [...seen] };
+  return newest;
 }
 
-// ---------- Routes ----------
-app.get("/healthz", (_, res) => res.json({ ok: true }));
+// ---- Diagnostics endpoints ----
+app.get("/healthz", (_req, res) => res.json({ ok: true }));
 
-// POST /verify_apple_receipt  { receipt_b64, product_id }
+app.get("/diag", (_req, res) => {
+  const chk = configCheck();
+  res.json({
+    ok: chk.ok,
+    issues: chk.issues,
+    env: {
+      NODE_ENV: ENV.NODE_ENV,
+      hasIssuerId: !!ENV.APPLE_ISSUER_ID,
+      hasKeyId: !!ENV.APPLE_KEY_ID,
+      hasBundleId: !!ENV.APPLE_BUNDLE_ID,
+      keyLen: chk.pemLen,
+      keyStartsWith: chk.pemStart
+    }
+  });
+});
+
+// ---- Main endpoint ----
 app.post("/verify_apple_receipt", async (req, res) => {
   try {
     const { receipt_b64, product_id } = req.body || {};
-    if (!receipt_b64) return res.status(400).json({ error: "Missing receipt_b64" });
-
-    // 1) Bootstrap original_transaction_id once per user
-    const originalTransactionId = await getOriginalTransactionIdFromReceipt(receipt_b64);
-    if (!originalTransactionId) {
-      return res.json({ active: false, reason: "NO_ORIGINAL_TRANSACTION_ID" });
+    if (!receipt_b64) {
+      return res.status(400).json({ active: false, reason: "MISSING_RECEIPT" });
     }
 
-    // 2) Query Apple App Store Server API (authoritative subscription state)
-    const client = appleClient();
-    const statuses = await client.getAllSubscriptionStatuses(originalTransactionId); // official endpoint
-    // Docs: "Get All Subscription Statuses" returns active/expired/grace/retry states. 
-    // We'll condense to a simple decision. :contentReference[oaicite:5]{index=5}
+    // Step 1: get original tx id (or explain why not)
+    const info = await getOriginalTransactionIdFromReceipt(receipt_b64);
+    if (!info?.originalTxId) {
+      return res.json({ active: false, reason: "NO_ORIGINAL_TRANSACTION_ID", debug: info?.debug || null });
+    }
 
-    // 3) Decide active/lapsed for your product
-    const decision = decideActiveFromStatuses(statuses, product_id);
+    // Step 2: call Apple Server API (authoritative) — only if we have a tx id
+    let statuses;
+    try {
+      const client = appleClient();
+      statuses = await client.getAllSubscriptionStatuses(info.originalTxId);
+    } catch (e) {
+      const httpStatusCode = e?.httpStatusCode || 0;
+      const apiError = e?.apiError || null;
+      return res.status(500).json({
+        active: false,
+        reason: "APPLE_SERVER_API_ERROR",
+        error: String(e?.message || e),
+        debug: {
+          httpStatusCode, apiError,
+          env: ENV.NODE_ENV,
+          keyId: ENV.APPLE_KEY_ID,
+          issuerId: ENV.APPLE_ISSUER_ID ? ENV.APPLE_ISSUER_ID.slice(0,8) + "..." : ""
+        }
+      });
+    }
 
-    // 4) Reply with a tiny JSON your GameMaker code can use directly
+    // Step 3: decide and reply
+    const d = decideActiveFromStatuses(statuses, product_id);
     return res.json({
-      active: decision.active,
-      productId: decision.productId || product_id || null,
-      expiresAt: decision.expiresAt || null,
+      active: d.active,
+      productId: d.productId || product_id || null,
+      expiresAt: d.expiresAt || null,
+      debug: d.debug || null
     });
   } catch (e) {
-    console.error("VERIFY_ERROR:", e);
     return res.status(500).json({ active: false, reason: "SERVER_ERROR", error: String(e?.message || e) });
   }
 });
 
-// ---------- Start ----------
-app.listen(PORT, () => console.log(`IAP server listening on port ${PORT} (${NODE_ENV})`));
-
+// ---- Start ----
+app.listen(ENV.PORT, () => {
+  console.log(`IAP server listening on port ${ENV.PORT} (${ENV.NODE_ENV})`);
+});
