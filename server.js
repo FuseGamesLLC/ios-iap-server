@@ -143,6 +143,7 @@ app.get("/diag", (_req, res) => {
       hasIssuerId: !!ENV.APPLE_ISSUER_ID,
       hasKeyId: !!ENV.APPLE_KEY_ID,
       hasBundleId: !!ENV.APPLE_BUNDLE_ID,
+      hasSharedSecret: !!process.env.APPLE_SHARED_SECRET,
       keyLen: chk.pemLen,
       keyStartsWith: chk.pemStart
     }
