@@ -25,7 +25,8 @@ const ENV = {
   APPLE_KEY_ID: process.env.APPLE_KEY_ID || "",
   APPLE_BUNDLE_ID: process.env.APPLE_BUNDLE_ID || "",
   APPLE_PRIVATE_KEY: process.env.APPLE_PRIVATE_KEY || "",
-  APPLE_PRIVATE_KEY_B64: process.env.APPLE_PRIVATE_KEY_B64 || ""
+  APPLE_PRIVATE_KEY_B64: process.env.APPLE_PRIVATE_KEY_B64 || "",
+  APPLE_SHARED_SECRET: process.env.APPLE_SHARED_SECRET || ""
 };
 
 function loadPem() {
@@ -66,7 +67,7 @@ async function getOriginalTransactionIdFromReceipt(receiptB64) {
       return { originalTxId: null, debug: { status: 21002, note: "receipt missing or too short" } };
     }
 
-    const body = { "receipt-data": receiptB64, "exclude-old-transactions": false };
+    const body = { "receipt-data": receiptB64, "exclude-old-transactions": false, "password": ENV.APPLE_SHARED_SECRET };
     const urlProd = "https://buy.itunes.apple.com/verifyReceipt";
     const urlSandbox = "https://sandbox.itunes.apple.com/verifyReceipt";
     const startUrl = ENV.NODE_ENV === "production" ? urlProd : urlSandbox;
